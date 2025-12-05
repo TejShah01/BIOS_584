@@ -1,0 +1,186 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>MHA Budget Sensitivity – Enrollment & Marketing</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.4; }
+    h1 { font-size: 22px; margin-bottom: 0; }
+    h2 { font-size: 18px; margin-top: 24px; }
+    label { display: inline-block; width: 260px; }
+    input[type="number"] { width: 120px; padding: 4px; margin-right: 8px; }
+    .metrics-box {
+      border: 1px solid #ccc;
+      padding: 10px 14px;
+      border-radius: 6px;
+      max-width: 420px;
+      background: #fafafa;
+    }
+    .metric { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>MHA Program – Sensitivity Analysis</h1>
+
+  <div class="inputs">
+    <h2>Inputs</h2>
+    <div>
+      <label for="studentsY1">Year 1 enrolled students:</label>
+      <input type="number" id="studentsY1" value="12" min="1" step="1">
+    </div>
+    <div>
+      <label for="mktPerStudent">Marketing cost per student:</label>
+      <input type="number" id="mktPerStudent" value="10000" min="0" step="500">
+    </div>
+    <button onclick="recalc()">Recalculate</button>
+  </div>
+
+  <div class="outputs">
+    <h2>Key Financial Metrics</h2>
+    <div class="metrics-box">
+      <p>
+        <span class="metric">NPV:</span> <span id="npvVal"></span><br>
+        <span class="metric">IRR:</span> <span id="irrVal"></span><br>
+        <span class="metric">MIRR:</span> <span id="mirrVal"></span><br>
+        <span class="metric">Payback Period:</span> <span id="paybackVal"></span><br>
+        <span class="metric">Year 5 Cumulative Cash Flow:</span> <span id="cumY5Val"></span>
+      </p>
+    </div>
+  </div>
+
+<script>
+function recalc() {
+  const years = [0,1,2,3,4,5];
+
+  // Baseline student counts from Excel: 0, 12, 21, 25.2, 26.2, 27.2
+  const baselineStudents = [0, 12, 21, 25.2, 26.2, 27.2];
+  const baselineY1 = baselineStudents[1];
+  const ratios = baselineStudents.map((s, i) => i === 0 ? 0 : s / baselineY1);
+
+  const tuitionPerStudent = [0,90000,93600,97344,101237.76,105287.2704];
+
+  const labor = [-496000,-1034000,-1053375,-1073234.375,-1093590.234,-1114454.989];
+  const supplies = [-20000,-20000,-20000,-20000,-20000,-20000];
+  const startup = [-150000,0,0,0,0,0];
+
+  const discountRate = 0.10;
+  const allowanceRate = 0.02;
+  const overheadRate = 0.20;
+  const decay = 0.8;
+
+  const baseInitMarketing = 200000;
+  const marketingTargetStudents = 25; // "ideal" cohort size used for marketing pool
+
+  const s1 = parseFloat(document.getElementById('studentsY1').value) || 0;
+  const mktPerStudent = parseFloat(document.getElementById('mktPerStudent').value) || 0;
+
+  // Students each year scale off Year 1 using the original ratios
+  const students = years.map((y, i) => i === 0 ? 0 : s1 * ratios[i]);
+
+  // Marketing pool is based on ideal target size, not actual enrolled
+  const cohortMarketing = marketingTargetStudents * mktPerStudent;
+
+  const marketing = [];
+  for (let i = 0; i < years.length; i++) {
+    let m = 0;
+    if (i === 0) {
+      m = baseInitMarketing + cohortMarketing;
+    } else {
+      m = cohortMarketing * Math.pow(decay, i);
+    }
+    marketing.push(-m);
+  }
+
+  const netCF = [];
+  const cumCF = [];
+
+  let cum = 0;
+  for (let i = 0; i < years.length; i++) {
+    const g = tuitionPerStudent[i] * students[i];
+    const n = g - allowanceRate * g;
+    const oh = -overheadRate * n;
+
+    const cf = n + labor[i] + supplies[i] + marketing[i] + startup[i] + oh;
+    cum += cf;
+
+    netCF.push(cf);
+    cumCF.push(cum);
+  }
+
+  let npv = 0;
+  for (let i = 0; i < years.length; i++) {
+    npv += netCF[i] / Math.pow(1 + discountRate, years[i]);
+  }
+
+  function npvAtRate(rate) {
+    let v = 0;
+    for (let i = 0; i < years.length; i++) {
+      v += netCF[i] / Math.pow(1 + rate, years[i]);
+    }
+    return v;
+  }
+
+  function computeIRR() {
+    let low = -0.9, high = 1.0, mid = 0;
+    let npvLow = npvAtRate(low), npvHigh = npvAtRate(high);
+    if (npvLow * npvHigh > 0) return NaN;
+    for (let iter = 0; iter < 60; iter++) {
+      mid = (low + high) / 2;
+      const m = npvAtRate(mid);
+      if (Math.abs(m) < 1e-4) break;
+      if (npvLow * m < 0) {
+        high = mid; npvHigh = m;
+      } else {
+        low = mid; npvLow = m;
+      }
+    }
+    return mid;
+  }
+
+  const irr = computeIRR();
+
+  function computeMIRR() {
+    let pvNeg = 0, fvPos = 0;
+    const n = years[years.length - 1];
+    for (let i = 0; i < years.length; i++) {
+      const cf = netCF[i];
+      if (cf < 0) pvNeg += cf / Math.pow(1 + discountRate, years[i]);
+      if (cf > 0) fvPos += cf * Math.pow(1 + discountRate, n - years[i]);
+    }
+    if (pvNeg === 0 || fvPos === 0) return NaN;
+    return Math.pow(-fvPos / pvNeg, 1 / n) - 1;
+  }
+  const mirr = computeMIRR();
+
+  let payback = NaN;
+  for (let i = 1; i < years.length; i++) {
+    if (cumCF[i] >= 0) {
+      const prev = cumCF[i-1];
+      const thisCF = cumCF[i];
+      const frac = -prev / (thisCF - prev);
+      payback = years[i-1] + frac;
+      break;
+    }
+  }
+
+  function fmtMoney(x) {
+    if (!isFinite(x)) return "N/A";
+    const s = Math.abs(x).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return (x < 0 ? "-$" : "$") + s;
+  }
+  function fmtPct(x) { return isFinite(x) ? (x*100).toFixed(1) + "%" : "N/A"; }
+  function fmtYears(x) { return isFinite(x) ? x.toFixed(2) + " years" : "N/A"; }
+
+  document.getElementById('npvVal').textContent = fmtMoney(npv);
+  document.getElementById('irrVal').textContent = fmtPct(irr);
+  document.getElementById('mirrVal').textContent = fmtPct(mirr);
+  document.getElementById('paybackVal').textContent = fmtYears(payback);
+  document.getElementById('cumY5Val').textContent = fmtMoney(cumCF[5]);
+}
+
+window.onload = recalc;
+</script>
+
+</body>
+</html>
